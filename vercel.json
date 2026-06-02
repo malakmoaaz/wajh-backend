@@ -1,5 +1,6 @@
 {
   "version": 2,
+  "buildCommand": "npx prisma generate && npx prisma db push",
   "builds": [{ "src": "wajh-backend/src/server.js", "use": "@vercel/node" }],
   "routes": [{ "src": "/(.*)", "dest": "wajh-backend/src/server.js" }]
 }
