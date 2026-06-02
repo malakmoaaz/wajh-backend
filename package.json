@@ -5,13 +5,14 @@
   "description": "WAJH Clinical CDSS — Express/PostgreSQL backend",
   "main": "wajh-backend/src/server.js",
   "scripts": {
-    "dev": "nodemon wajh-backend/src/server.js",
-    "start": "node wajh-backend/src/server.js",
-    "db:migrate": "npx prisma migrate dev",
-    "db:push": "npx prisma db push",
-    "db:studio": "npx prisma studio",
-    "db:seed": "node src/seed.js"
-  },
+  "postinstall": "npx prisma generate && npx prisma db push",
+  "dev": "nodemon wajh-backend/src/server.js",
+  "start": "node wajh-backend/src/server.js",
+  "db:migrate": "npx prisma migrate dev",
+  "db:push": "npx prisma db push",
+  "db:studio": "npx prisma studio",
+  "db:seed": "node src/seed.js"
+},
   "dependencies": {
     "@anthropic-ai/sdk": "^0.95.2",
     "@prisma/client": "^5.14.0",
