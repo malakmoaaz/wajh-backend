@@ -302,3 +302,4 @@ app.post('/api/analyze', (req, res) => {
 
 // ── Start ─────────────────────────────────────────────────────────
 app.listen(PORT, () => console.log(`WAJH backend running on http://localhost:${PORT}`));
+export default app; 

@@ -1,0 +1,5 @@
+{
+  "version": 2,
+  "builds": [{ "src": "wajh-backend/src/server.js", "use": "@vercel/node" }],
+  "routes": [{ "src": "/(.*)", "dest": "wajh-backend/src/server.js" }]
+}
