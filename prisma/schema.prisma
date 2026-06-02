@@ -1,0 +1,56 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Patient {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  firstName   String
+  lastName    String
+  dateOfBirth DateTime?
+  gender      String?
+  notes       String?
+  phone       String?
+  email       String?
+  cases       Case[]
+  @@map("patients")
+}
+
+model Case {
+  id          String       @id @default(cuid())
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  patientId   String
+  patient     Patient      @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  title       String
+  status      String       @default("active")
+  notes       String?
+  imagePath   String?
+  calibration Json?
+  simulations Simulation[]
+  @@map("cases")
+}
+
+model Simulation {
+  id                String   @id @default(cuid())
+  createdAt         DateTime @default(now())
+  caseId            String
+  case              Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  surgeryName       String   @default("Maxillofacial Procedure")
+  confidence        Int?
+  initialLandmarks  Json
+  modifiedLandmarks Json
+  surgicalPlan      Json?
+  resultImageData   String?  @db.Text
+  aiRecommendation  Json?
+  goldenRatioData   Json?
+  mlProcedure       String?
+  mlConfidence      Float?
+  @@map("simulations")
+}
