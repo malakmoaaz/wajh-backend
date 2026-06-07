@@ -12,4 +12,4 @@ export function errorHandler(err, req, res, next) {
 // Wraps async route handlers so unhandled promise rejections are caught
 export function asyncHandler(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
-} 
+}

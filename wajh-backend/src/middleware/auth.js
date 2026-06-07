@@ -26,4 +26,4 @@ export function requireRole(...roles) {
     }
     next();
   };
-} 
+}
