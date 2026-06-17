@@ -14,6 +14,7 @@ const PORT = process.env.PORT || 4000;
 app.use(cors({
   origin: [
     'https://wajh-frontend.vercel.app',
+    'https://wajh-web.vercel.app',
     'http://localhost:5173',
     'http://localhost:3000',
   ],
