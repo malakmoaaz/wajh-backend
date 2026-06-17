@@ -55,3 +55,12 @@ model Simulation {
   mlConfidence      Float?
   @@map("simulations")
 }
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  role      String   @default("DOCTOR")
+  createdAt DateTime @default(now())
+
+  @@map("users")
+}
