@@ -270,7 +270,59 @@ function buildDeltas(initial, modified, pxPerMm) {
 }
 
 function get(deltas, id) { return deltas.find(d => d.id === id) ?? null; }
+const PHI = 1.618033988749895;
 
+function computeGoldenRatio(modifiedLandmarks, pxPerMm) {
+  const lmMap = new Map(modifiedLandmarks.map(l => [l.id, l]));
+  const scale = pxPerMm || 5.0;
+  const dist = (a, b) => {
+    const la = lmMap.get(a), lb = lmMap.get(b);
+    if (!la || !lb) return null;
+    return Math.hypot(la.x - lb.x, la.y - lb.y) / scale;
+  };
+
+  const results = {};
+  const lfh = dist('subnasale', 'gnathion');
+  const ufh = dist('nasion', 'subnasale');
+
+  if (lfh && ufh && ufh > 0) {
+    const ratio = lfh / ufh;
+    results.face_height_ratio = {
+      current: Math.round(ratio * 1000) / 1000,
+      ideal: Math.round(PHI * 1000) / 1000,
+      deviation_mm: Math.round(Math.abs(ratio - PHI) * ufh * 10) / 10,
+      label: 'Lower / Upper Face Height',
+      within_norm: Math.abs(ratio - PHI) < 0.15,
+    };
+  }
+
+  const fw = dist('zygion_l', 'zygion_r');
+  const jw = dist('gonion_l', 'gonion_r');
+  if (fw && jw && fw > 0) {
+    const ratio = jw / fw;
+    const ideal = 1 / PHI;
+    results.jaw_face_width_ratio = {
+      current: Math.round(ratio * 1000) / 1000,
+      ideal: Math.round(ideal * 1000) / 1000,
+      deviation_mm: Math.round(Math.abs(ratio - ideal) * fw * 10) / 10,
+      label: 'Jaw Width / Face Width',
+      within_norm: Math.abs(ratio - ideal) < 0.08,
+    };
+  }
+
+  const devs = Object.values(results).map(v => v.deviation_mm);
+  const score = devs.length
+    ? Math.max(0, Math.min(100, Math.round(100 - (devs.reduce((a, b) => a + b, 0) / devs.length) * 4)))
+    : 100;
+
+  const overallAssessment =
+    score >= 85 ? 'Excellent facial harmony' :
+    score >= 70 ? 'Good harmony with minor deviations' :
+    score >= 50 ? 'Moderate deviations — surgical correction may improve harmony' :
+    'Significant deviations from golden ratio';
+
+  return { ratios: results, harmonyScore: score, overallAssessment };
+}
 function analyze(deltas, pxPerMm) {
   const SIG = pxPerMm ? 2 : 8;
   const pogonion = get(deltas, 'pogonion');
@@ -330,12 +382,15 @@ app.post('/api/analyze', (req, res) => {
       return res.status(400).json({ message: 'initialLandmarks and modifiedLandmarks are required.' });
     const pxPerMm = calibration?.pixelsPerMm ?? null;
     const deltas = buildDeltas(initialLandmarks, modifiedLandmarks, pxPerMm);
-    res.json(analyze(deltas, pxPerMm));
+    const result = analyze(deltas, pxPerMm);
+    result.goldenRatio = computeGoldenRatio(modifiedLandmarks, pxPerMm);
+    res.json(result);
   } catch (e) {
     console.error('/api/analyze error:', e);
     res.status(500).json({ message: 'Analysis failed: ' + e.message });
   }
 });
+
 
 // ── START ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => console.log(`WAJH backend running on http://localhost:${PORT}`));
