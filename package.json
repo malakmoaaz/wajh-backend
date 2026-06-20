@@ -4,8 +4,8 @@
   "type": "module",
   "description": "WAJH Clinical CDSS — Express/PostgreSQL backend",
   "main": "wajh-backend/src/server.js",
-  "scripts": {
-    "postinstall": "npx prisma generate && npx prisma db push",
+ "scripts": {
+  "postinstall": "npx prisma generate",
     "dev": "nodemon wajh-backend/src/server.js",
     "start": "node wajh-backend/src/server.js",
     "db:migrate": "npx prisma migrate dev",
