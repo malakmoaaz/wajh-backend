@@ -157,6 +157,26 @@ app.get('/api/patients', async (_, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 });
 
+// IMPORTANT: this must come before '/api/patients/:id' so Express doesn't
+// try to match the literal string "me" as an :id param on that route instead.
+app.get('/api/patient/me', authenticateToken, async (req, res) => {
+  try {
+    const patient = await prisma.patient.findFirst({
+      where: { email: req.user.email },
+      include: {
+        cases: {
+          orderBy: { createdAt: 'desc' },
+          include: { simulations: { orderBy: { createdAt: 'desc' } } }
+        }
+      }
+    });
+    if (!patient) {
+      return res.status(404).json({ message: 'No patient record is linked to this account yet. Ask your doctor to link it.' });
+    }
+    res.json(patient);
+  } catch (e) { res.status(500).json({ message: e.message }); }
+});
+
 app.get('/api/patients/:id', async (req, res) => {
   try {
     const patient = await prisma.patient.findUniqueOrThrow({
