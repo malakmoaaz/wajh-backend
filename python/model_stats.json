@@ -1,0 +1,16 @@
+{
+  "accuracy": 98.4,
+  "f1_macro": 0.984,
+  "cv_f1_mean": 0.982,
+  "cv_f1_std": 0.003,
+  "cv_scores": [
+    0.983,
+    0.98,
+    0.981,
+    0.98,
+    0.987
+  ],
+  "n_samples": 16000,
+  "n_features": 90,
+  "feature_type": "90 raw coordinates (45 landmarks \u00d7 x,y)"
+}
