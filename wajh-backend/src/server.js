@@ -11,13 +11,22 @@ const prisma = new PrismaClient();
 const PORT = process.env.PORT || 4000;
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
+// Static list for localhost dev, plus a dynamic check that allows any
+// *.vercel.app origin — Vercel project URLs and preview-deployment URLs
+// change often (this project alone has used wajh-frontend, wajh-web, and
+// project-fy7jg as different Vercel domains), so hardcoding one exact
+// domain breaks the moment Vercel issues a different one.
+const STATIC_ALLOWED_ORIGINS = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+];
 app.use(cors({
-  origin: [
-    'https://wajh-frontend.vercel.app',
-    'https://wajh-web.vercel.app',
-    'http://localhost:5173',
-    'http://localhost:3000',
-  ],
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true); // non-browser requests (curl, health checks)
+    if (STATIC_ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    if (/^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin)) return callback(null, true);
+    return callback(new Error(`Not allowed by CORS: ${origin}`));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -189,6 +198,27 @@ app.delete('/api/patients/:id', async (req, res) => {
   } catch (e) { res.status(400).json({ message: e.message }); }
 });
 
+// Patient-facing: the logged-in PATIENT account's own record, matched by the
+// email their account was registered with against Patient.email (set by the
+// doctor when linking the account in Admin Dashboard / Save This Result).
+app.get('/api/patient/me', authenticateToken, async (req, res) => {
+  try {
+    const patient = await prisma.patient.findFirst({
+      where: { email: req.user.email },
+      include: {
+        cases: {
+          orderBy: { createdAt: 'desc' },
+          include: { simulations: { orderBy: { createdAt: 'desc' } } }
+        }
+      }
+    });
+    if (!patient) {
+      return res.status(404).json({ message: 'No patient record is linked to this account yet. Ask your doctor to link it.' });
+    }
+    res.json(patient);
+  } catch (e) { res.status(500).json({ message: e.message }); }
+});
+
 // ── CASES ─────────────────────────────────────────────────────────────────────
 app.post('/api/cases', async (req, res) => {
   try {
@@ -271,6 +301,34 @@ function buildDeltas(initial, modified, pxPerMm) {
 
 function get(deltas, id) { return deltas.find(d => d.id === id) ?? null; }
 const PHI = 1.618033988749895;
+
+// Converts rule-based ideal target positions (from computeCephTargets) into
+// the same {id, name, dxMm, dyMm, mag, xBefore, yBefore, xAfter, yAfter}
+// shape buildDeltas() produces, but measuring deviation of the CURRENT
+// landmark state from the computed ideal — not from the original detection.
+// This lets analyze() (unchanged) drive the procedure recommendation off
+// "how far is this patient from anatomically ideal proportions right now",
+// which is correct both on first load (current === initial, full deviation
+// shown) and live as the doctor manually corrects landmarks (deviation
+// shrinks toward the target) — the hybrid manual + AI behavior.
+function buildIdealDeltas(currentLandmarks, idealTargets, pxPerMm) {
+  const curMap = new Map(currentLandmarks.map(l => [l.id, l]));
+  return idealTargets.map(t => {
+    const cur = curMap.get(t.id);
+    if (!cur) return null;
+    const dxPx = t.x - cur.x;
+    const dyPx = t.y - cur.y;
+    const dxMm = pxPerMm ? dxPx / pxPerMm : dxPx;
+    const dyMm = pxPerMm ? dyPx / pxPerMm : dyPx;
+    return {
+      id: t.id, name: cur.name || t.id,
+      xBefore: cur.x, yBefore: cur.y, xAfter: t.x, yAfter: t.y,
+      dxMm: Math.round(dxMm * 10) / 10,
+      dyMm: Math.round(dyMm * 10) / 10,
+      mag: Math.round(Math.hypot(dxMm, dyMm) * 10) / 10,
+    };
+  }).filter(Boolean);
+}
 
 function computeGoldenRatio(modifiedLandmarks, pxPerMm) {
   const lmMap = new Map(modifiedLandmarks.map(l => [l.id, l]));
@@ -370,20 +428,134 @@ function analyze(deltas, pxPerMm) {
 
   const targetLandmarks = deltas.filter(d => d.mag > (pxPerMm ? 1 : 3)).map(d => ({ id: d.id, x: Math.round(d.xAfter), y: Math.round(d.yAfter) }));
   const movedCount = deltas.filter(d => d.mag > (pxPerMm ? 1 : 3)).length;
-  const confidence = movedCount >= 5 ? 'high' : movedCount >= 2 ? 'medium' : 'low';
+  // Confidence reflects how clearly the cephalometric assessment supports a
+  // specific procedure recommendation, not just how many landmarks moved:
+  // - HIGH:   a real procedure was detected AND 3+ landmarks show significant
+  //           deviation from ideal (clear clinical indication)
+  // - MEDIUM: a procedure was detected with at least 1 significant landmark,
+  //           or no procedure but 3+ landmarks deviate (borderline case)
+  // - LOW:    no significant deviations, or insufficient landmark data
+  const hasProcedure = procs.length > 0;
+  const confidence = hasProcedure && movedCount >= 3 ? 'high'
+      : hasProcedure && movedCount >= 1 ? 'medium'
+      : movedCount >= 3 ? 'medium'
+      : 'low';
 
   return { procedure, classification, reasoning: reasoning.trim(), measurements, targetLandmarks, confidence };
 }
+// ── CEPHALOMETRIC TARGET COMPUTATION ─────────────────────────────────────────
+// Computes patient-specific ideal landmark positions based on published norms:
+//   Norm 1 (Ricketts): Lower face height / Upper face height = φ (1.618)
+//   Norm 2 (Ricketts): Jaw width / Face width = 1/φ (0.618)
+// Soft tissue ratios from Proffit & White, Contemporary Orthodontics:
+//   Lower lip follows mandible at 70%, stomion at 50%, upper lip at 30%
+function computeCephTargets(initialLandmarks, pxPerMm) {
+    const lm     = new Map(initialLandmarks.map(l => [l.id, l]));
+    const scale  = pxPerMm || 5.0;
+    const targets = [];
 
+    const nasion    = lm.get('nasion');
+    const subnasale = lm.get('subnasale');
+    const gnathion  = lm.get('gnathion');
+    const gonionL   = lm.get('gonion_l');
+    const gonionR   = lm.get('gonion_r');
+    const zygionL   = lm.get('zygion_l');
+    const zygionR   = lm.get('zygion_r');
+    const pogonion  = lm.get('pogonion');
+    const chinMid   = lm.get('chin_mid');
+    const menton    = lm.get('menton');
+    const labSup    = lm.get('labrale_superius');
+    const labInf    = lm.get('labrale_inferius');
+    const stomion   = lm.get('stomion');
+
+    // ── Norm 1: LFH / UFH = φ ────────────────────────────────────────────
+    // UFH = nasion → subnasale, LFH = subnasale → gnathion
+    // If LFH ≠ UFH × φ, compute where gnathion (and dependent landmarks) should be
+    if (nasion && subnasale && gnathion) {
+        const ufhPx      = subnasale.y - nasion.y;
+        const lfhPx      = gnathion.y  - subnasale.y;
+        const idealLfhPx = ufhPx * PHI;
+        const deltaY     = idealLfhPx - lfhPx;        // positive = gnathion moves down
+        const devMm      = Math.abs(deltaY) / scale;
+
+        if (devMm >= 2) {
+            targets.push({ id: 'gnathion', x: Math.round(gnathion.x), y: Math.round(gnathion.y + deltaY) });
+
+            // Hard tissue: pogonion moves 85% of gnathion delta, chin_mid 90%, menton 100%
+            if (pogonion) targets.push({ id: 'pogonion', x: Math.round(pogonion.x), y: Math.round(pogonion.y + deltaY * 0.85) });
+            if (chinMid)  targets.push({ id: 'chin_mid',  x: Math.round(chinMid.x),  y: Math.round(chinMid.y  + deltaY * 0.90) });
+            if (menton)   targets.push({ id: 'menton',    x: Math.round(menton.x),   y: Math.round(menton.y   + deltaY * 1.00) });
+
+            // Soft tissue ratios (Proffit & White)
+            if (labInf)  targets.push({ id: 'labrale_inferius', x: Math.round(labInf.x),  y: Math.round(labInf.y  + deltaY * 0.70) });
+            if (stomion) targets.push({ id: 'stomion',          x: Math.round(stomion.x), y: Math.round(stomion.y + deltaY * 0.50) });
+            if (labSup)  targets.push({ id: 'labrale_superius', x: Math.round(labSup.x),  y: Math.round(labSup.y  + deltaY * 0.30) });
+        }
+    }
+
+    // ── Norm 2: Jaw width / Face width = 1/φ ─────────────────────────────
+    // JW = gonion_l → gonion_r, FW = zygion_l → zygion_r, ideal JW/FW = 0.618
+    if (gonionL && gonionR && zygionL && zygionR) {
+        const fwPx        = zygionR.x  - zygionL.x;
+        const jwPx        = gonionR.x  - gonionL.x;
+        const idealJwPx   = fwPx / PHI;
+        const midX        = (gonionL.x + gonionR.x) / 2;
+        const devMm       = Math.abs(idealJwPx - jwPx) / scale;
+
+        if (devMm >= 1.5) {
+            targets.push({ id: 'gonion_l', x: Math.round(midX - idealJwPx / 2), y: Math.round(gonionL.y) });
+            targets.push({ id: 'gonion_r', x: Math.round(midX + idealJwPx / 2), y: Math.round(gonionR.y) });
+        }
+    }
+
+    return targets;
+}
 app.post('/api/analyze', (req, res) => {
   try {
     const { initialLandmarks, modifiedLandmarks, calibration } = req.body;
     if (!initialLandmarks?.length || !modifiedLandmarks?.length)
       return res.status(400).json({ message: 'initialLandmarks and modifiedLandmarks are required.' });
     const pxPerMm = calibration?.pixelsPerMm ?? null;
-    const deltas = buildDeltas(initialLandmarks, modifiedLandmarks, pxPerMm);
-    const result = analyze(deltas, pxPerMm);
+
+    // Rule-based ideal positions, computed once from the patient's own
+    // original (undisplaced) anatomy via the φ-ratio Ricketts norms — fixed
+    // per patient regardless of any later manual edits.
+    const idealTargets = computeCephTargets(initialLandmarks, pxPerMm);
+
+    // Deviation of the CURRENT landmark state from that ideal. On first load
+    // (modifiedLandmarks === initialLandmarks) this is the full baseline
+    // deviation; as the doctor manually corrects a landmark it shrinks
+    // toward zero. This is what actually drives the recommendation.
+    const idealDeltas = buildIdealDeltas(modifiedLandmarks, idealTargets, pxPerMm);
+    const idealIds = new Set(idealDeltas.map(d => d.id));
+
+    // A few procedure triggers (nasal modification, transverse jaw widening)
+    // aren't covered by either φ-ratio norm — there's no computed ideal
+    // target for them. For those specific landmarks only, fall back to
+    // genuine manual-drag deltas (modified vs initial) so deliberate doctor
+    // exploration still surfaces those procedures; they just won't get a
+    // fabricated equation-based mm value in the landmark list below.
+    const dragDeltas = buildDeltas(initialLandmarks, modifiedLandmarks, pxPerMm)
+      .filter(d => !idealIds.has(d.id));
+
+    const result = analyze([...idealDeltas, ...dragDeltas], pxPerMm);
     result.goldenRatio = computeGoldenRatio(modifiedLandmarks, pxPerMm);
+    result.targetLandmarks = idealTargets;
+
+    // Per-landmark recommendation list for the UI: real computed mm + a
+    // target position to apply, one row per landmark that's clinically
+    // significant per the φ-ratio formulas — no static numbers.
+    result.recommendedLandmarkMoves = idealDeltas
+      .filter(d => d.mag > 0.3)
+      .map(d => ({
+        id: d.id, name: d.name, deltaMm: d.mag,
+        direction: Math.abs(d.dxMm) >= Math.abs(d.dyMm)
+          ? (d.dxMm > 0 ? 'advance' : 'retract')
+          : (d.dyMm > 0 ? 'inferior' : 'superior'),
+        targetX: d.xAfter, targetY: d.yAfter,
+      }))
+      .sort((a, b) => b.deltaMm - a.deltaMm);
+
     res.json(result);
   } catch (e) {
     console.error('/api/analyze error:', e);
