@@ -428,17 +428,15 @@ function analyze(deltas, pxPerMm) {
 
   const targetLandmarks = deltas.filter(d => d.mag > (pxPerMm ? 1 : 3)).map(d => ({ id: d.id, x: Math.round(d.xAfter), y: Math.round(d.yAfter) }));
   const movedCount = deltas.filter(d => d.mag > (pxPerMm ? 1 : 3)).length;
-  // Confidence reflects how clearly the cephalometric assessment supports a
-  // specific procedure recommendation, not just how many landmarks moved:
-  // - HIGH:   a real procedure was detected AND 3+ landmarks show significant
-  //           deviation from ideal (clear clinical indication)
-  // - MEDIUM: a procedure was detected with at least 1 significant landmark,
-  //           or no procedure but 3+ landmarks deviate (borderline case)
-  // - LOW:    no significant deviations, or insufficient landmark data
+  // The φ-ratio formula covers only 6-8 specific landmarks (gnathion, pogonion,
+  // gonion L/R, labrale, stomion etc.), so movedCount will naturally be lower
+  // than when measuring manual drags across all 40+ landmarks. Thresholds are
+  // set accordingly: 2+ significant deviations with a real procedure = high,
+  // since 2 landmarks significantly off ideal is already a clear clinical case.
   const hasProcedure = procs.length > 0;
-  const confidence = hasProcedure && movedCount >= 3 ? 'high'
+  const confidence = hasProcedure && movedCount >= 2 ? 'high'
       : hasProcedure && movedCount >= 1 ? 'medium'
-      : movedCount >= 3 ? 'medium'
+      : movedCount >= 2 ? 'medium'
       : 'low';
 
   return { procedure, classification, reasoning: reasoning.trim(), measurements, targetLandmarks, confidence };
